@@ -1,0 +1,1 @@
+test_mux_before: work/rec16/test_mux_before.c:69: main: Assertion `video_written==60&&audio_end<=48000+4800+240' failed.

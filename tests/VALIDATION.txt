@@ -1,0 +1,53 @@
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=1 samples=0..240 bytes=480 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=2 channels=2 rate=48000 volume=1.000 queued=1 samples=0..240 bytes=960 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=2 samples=0..120 bytes=240 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=2 channels=1 rate=32000 volume=1.000 queued=1 samples=0..160 bytes=320 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=1 samples=0..120 bytes=240 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=6 channels=1 rate=48000 volume=1.000 queued=1 samples=0..14 bytes=8 mix=-1
+audio: ADPCM params=32 readable=1 co=2048,0,0,0 first=0000000000000000 reserved159=0
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=6 channels=1 rate=48000 volume=1.000 queued=1 samples=0..14 bytes=8 mix=-1
+audio: ADPCM params=0 readable=0 co=0,0,0,0 first=0f78787878787878 reserved159=0
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=5 channels=1 rate=48000 volume=1.000 queued=1 samples=0..240 bytes=960 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=0.500 queued=1 samples=0..240 bytes=480 mix=1
+audio: sink inputs=2 final_buffers=2 peaks=0.1250 0.0625 0.0000 0.0000 0.0000 0.0000 volume=0.500
+audio: audren mixer active (1 voices, 2 mixes), PCM/DSP-ADPCM, mix routing
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=1 samples=0..240 bytes=480 mix=0
+audio: sink inputs=6 final_buffers=6 peaks=0.0000 0.0000 0.2500 0.0000 0.0000 0.0000 volume=1.000
+audio: audren mixer active (1 voices, 1 mixes), PCM/DSP-ADPCM, mix routing
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=1 samples=0..240 bytes=480 mix=0
+audio: sink inputs=6 final_buffers=6 peaks=0.0000 0.0000 0.0000 0.0000 0.2500 0.0000 volume=1.000
+audio: audren mixer active (1 voices, 1 mixes), PCM/DSP-ADPCM, mix routing
+audio: voice 0 start fmt=2 channels=1 rate=48000 volume=1.000 queued=1 samples=0..480 bytes=960 mix=-1
+audio: audren mixer active (1 voices, 0 mixes), PCM/DSP-ADPCM, direct stereo fallback
+audio: SDL2, 48000 Hz stereo PCM16 enabled
+PASS PCM16 mono, gain, completion and duplicate-descriptor protection
+PASS interleaved stereo channels
+PASS streaming across two buffers in a single update
+PASS 32kHz resampling and exact end-of-buffer accounting
+PASS looping, pause and stop/flush
+PASS DSP ADPCM predictor, histories and loop context
+PASS DSP ADPCM positive/negative saturation
+PASS non-finite float samples become silence
+PASS unmapped/truncated sample memory rejected
+PASS per-channel routing, submix matrix and final-mix volumes
+PASS center-only dialogue survives 5.1 stereo downmix
+PASS rear-left channel downmix preserves stereo side
+PASS REV1 reserved padding cannot drop a short sound
+PASS audout PCM16 stereo, surround center, volume and memory bounds
+PASS host output submission (SDL dummy device)
+PASS: 48kHz timestamps, 60fps/slow guest-clock alignment, jitter snapping, preserved gaps and PCM clipping
+
+Additional tests run outside the package:
+- Direct audout 1024-frame buffer boundaries, release tags and stop/start.
+- Actual renderer: partial/empty clear, bounds intersection, conditional false, overrides.
+- WAV/OGG/MP3 decoding with SDL dummy device, gain/loop/mute and sample-rate conversion.
+- Actual memory-budget function: Xenoblade auto headroom and explicit overrides.
+All passed. Game execution and Windows UI/MF output are not verified here.

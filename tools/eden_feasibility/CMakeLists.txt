@@ -1,0 +1,77 @@
+# Feasibility build: Eden-NS2's shader_recompiler and video_core compiled with the project's MinGW gcc.
+# Their own CMakeLists give the source lists; everything they link to is a stand-in (nothing is linked).
+cmake_minimum_required(VERSION 3.22)
+project(vc_feasibility CXX C)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(E "${EDEN_SRC}")
+set(D "${DEPS}")
+set(ARCHITECTURE_x86_64 ON)
+set(ENABLE_OPENGL ON)
+set(ENABLE_RESHADE OFF)
+set(ENABLE_LSFG OFF)
+set(YUZU_USE_BUNDLED_FFMPEG OFF)
+set(GLSLANGVALIDATOR "${GLSLANG}")
+set(FIDELITYFX_INCLUDE_DIR "${E}/externals/FidelityFX-FSR/ffx-fsr")
+add_compile_options(-w)
+function(create_target_directory_groups)
+endfunction()
+add_library(common INTERFACE)
+target_include_directories(common INTERFACE "${E}/src" "${CMAKE_BINARY_DIR}/gen" "${D}/fmt/include" "${D}/boost/boost_1_89_0" "${D}/json/include" "${D}/frozen/include")
+target_compile_definitions(common INTERFACE FMT_HEADER_ONLY)
+add_library(core INTERFACE)
+target_link_libraries(core INTERFACE common)
+foreach(t stb bc_decoder glad sirit_t vkh vku vma xbyak_t dyn_t)
+  add_library(${t} INTERFACE)
+endforeach()
+target_include_directories(stb INTERFACE "${E}/externals/stb")
+target_include_directories(bc_decoder INTERFACE "${E}/externals/bc_decoder")
+target_include_directories(glad INTERFACE "${E}/externals/glad/include")
+target_include_directories(sirit_t INTERFACE "${D}/sirit/include" "${D}/SPIRV-Headers/include")
+target_include_directories(vkh INTERFACE "${D}/Vulkan-Headers/include")
+target_include_directories(vku INTERFACE "${D}/Vulkan-Utility-Libraries/include")
+target_include_directories(vma INTERFACE "${D}/VulkanMemoryAllocator/include")
+add_library(sirit::sirit ALIAS sirit_t)
+target_include_directories(xbyak_t INTERFACE "${D}/xbyak")
+add_library(xbyak::xbyak ALIAS xbyak_t)
+add_library(dynarmic::dynarmic ALIAS dyn_t)
+add_library(Vulkan::Headers ALIAS vkh)
+add_library(Vulkan::UtilityHeaders ALIAS vku)
+add_library(GPUOpen::VulkanMemoryAllocator ALIAS vma)
+add_library(fmt::fmt ALIAS common)
+add_library(Boost::headers ALIAS common)
+add_library(Boost::context ALIAS common)
+set(FFmpeg_INCLUDE_DIR "${D}/ffmpeg/ucrt64/include")
+set(FFmpeg_LIBRARIES "")
+add_subdirectory("${E}/src/shader_recompiler" shader_recompiler)
+add_subdirectory("${E}/src/video_core" video_core)
+
+# ---- Step 1 (link test): the libraries video_core needs, then a test program over a core shim. ----
+option(EDEN_LINK_TEST "Build the link test program" ON)
+if(EDEN_LINK_TEST)
+  file(GLOB SIRIT_SRC "${D}/sirit/src/*.cpp" "${D}/sirit/src/instructions/*.cpp")
+  add_library(sirit_lib STATIC ${SIRIT_SRC})
+  target_include_directories(sirit_lib PRIVATE "${D}/sirit/src")
+  target_include_directories(sirit_lib PUBLIC "${D}/sirit/include" "${D}/SPIRV-Headers/include")
+  add_library(eden_ext STATIC "${E}/externals/bc_decoder/bc_decoder.cpp" "${E}/externals/glad/src/glad.c"
+              "${E}/externals/stb/stb_dxt.cpp"
+              "${CMAKE_CURRENT_SOURCE_DIR}/link_test/vma.cpp")
+  target_link_libraries(eden_ext PRIVATE common)
+  target_include_directories(eden_ext PRIVATE "${E}/externals/bc_decoder" "${E}/externals/glad/include" "${E}/externals/stb"
+              "${D}/Vulkan-Headers/include" "${D}/VulkanMemoryAllocator/include")
+  set(C "${E}/src/common")
+  add_library(eden_common STATIC
+    ${C}/assert.cpp ${C}/address_space.cpp ${C}/cityhash.cpp ${C}/cpu_features.cpp ${C}/dynamic_library.cpp
+    ${C}/fs/file.cpp ${C}/fs/fs.cpp ${C}/fs/fs_util.cpp ${C}/fs/path_util.cpp ${C}/logging.cpp
+    ${C}/multi_level_page_table.cpp ${C}/settings.cpp ${C}/settings_common.cpp ${C}/settings_input.cpp
+    ${C}/sparse_large_vector.cpp ${C}/steady_clock.cpp ${C}/stream.cpp ${C}/string_util.cpp ${C}/thread.cpp
+    ${C}/x64/rdtsc.cpp ${C}/windows/timer_resolution.cpp ${C}/time_zone.cpp
+    ${E}/src/core/frontend/emu_window.cpp ${E}/src/core/frontend/framebuffer_layout.cpp)
+  target_link_libraries(eden_common PUBLIC common xbyak_t)
+  add_executable(eden_link_test link_test/main.cpp link_test/core_shim.cpp link_test/ffmpeg_stub.c)
+  target_link_libraries(eden_link_test PRIVATE video_core shader_recompiler gpu_logging eden_common sirit_lib
+                        eden_ext common vkh vku vma)
+  target_include_directories(eden_link_test PRIVATE "${D}/ffmpeg/ucrt64/include")
+  target_link_options(eden_link_test PRIVATE -static)
+  target_link_libraries(eden_link_test PRIVATE ntdll ws2_32 dwmapi gdi32 user32 ole32 shell32 winmm)
+endif()

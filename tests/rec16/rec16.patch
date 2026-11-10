@@ -1,0 +1,239 @@
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -7,7 +7,7 @@
+ /* the runtime version goes in every log, so you can tell a crash report from an old or third party build by the
+    first line */
+ #ifndef SWR_RUNTIME_VERSION
+-#define SWR_RUNTIME_VERSION "v190-rec15-avsync"
++#define SWR_RUNTIME_VERSION "v190-rec16-nofreeze"
+ #endif
+ #include "rt.h"
+ #include "audio.h"
+@@ -443,6 +443,9 @@
+   u64 next=plat_ns(); int tick=0;
+   while(!g_quit){
+     video_poll(); hid_update(); vsync_tick_vt();
++#if defined(SWR_RECORD_AUDIO)
++    {extern void rec_watchdog(void);rec_watchdog();}
++#endif
+     {extern void swr_audout_tick(void);swr_audout_tick();}
+     if(tick%60==0) ini_poll();
+     { extern void kernel_heal_mutexes(void); kernel_heal_mutexes(); }
+--- a/runtime/gpu_gl.c
++++ b/runtime/gpu_gl.c
+@@ -2420,6 +2420,7 @@
+    its own thread */
+ extern volatile int g_rec_toggle; extern void backend_rec_state(int on);
+ extern int rec_open(const wchar_t* path, int w, int h, int fps); extern void rec_frame(const u8* nv12, i64 t100, i64 dur100); extern void rec_close(void); extern void rec_audio_start(u64);
++extern int rec_failed(void);
+ #define REC_N 3
+ extern volatile int g_vt_on; extern int g_opt_rec_fps; extern u64 guest_ns(void); static u64 g_rec_n, g_rec_vt0, g_rec_lastts;
+ static int g_rec_on, g_rec_w, g_rec_h; static u64 g_rec_t0, g_rec_last; static u32 g_rec_k; static u64 g_rec_out, g_rec_base; static int g_rec_have;
+@@ -2491,6 +2492,7 @@
+ void gpu_gl_rec_finish(void){ if(!g_rec_on) return; g_rec_exit=1; u64 t0=plat_ns(); while(g_rec_exit!=2 && plat_ns()-t0<30000000000ull) plat_sleep_ns(10000000); }
+ 
+ static void rec_capture(GLuint tex, const float* xf, int tw, int th){
++  if(g_rec_on&&rec_failed()){rec_stop();return;}
+   if(g_rec_toggle){ g_rec_toggle=0; if(g_rec_on) rec_stop(); else rec_start(); }
+   if(!g_rec_on) return;
+   /* A frame queued before F7 was pressed belongs to the previous timeline. */
+@@ -3075,6 +3077,7 @@
+     lsfg_pump();
+     i64 to_=100000000; if(g_lfn){ u64 nw=plat_ns(); to_= g_lfq[0].t>nw? (i64)(g_lfq[0].t-nw) : 0; if(to_<200000) to_=200000; }
+ #ifdef _WIN32
++    if(g_rec_on&&rec_failed())rec_stop();
+     if(g_rec_exit==1){ rec_stop(); g_rec_exit=2; }
+     if(g_rec_toggle && g_rec_on){ g_rec_toggle=0; rec_stop(); }   /* let F7 stop even when nothing is being presented */
+ #endif
+--- a/runtime/rec_win32.c
++++ b/runtime/rec_win32.c
+@@ -14,6 +14,7 @@
+ #include <codecapi.h>
+ #include <stdio.h>
+ #include "rt.h"
++#include "rec_flow.h"
+ 
+ /* big queue, never drop frames. dropped frames leave holes that some players won't play (laggy parts push several
+    repeated frames at once) */
+@@ -24,6 +25,8 @@
+ static HANDLE g_th, g_ev, g_ready_ev, g_space_ev; static volatile int g_run, g_ok;
+ static int g_w, g_h, g_fps; static u32 g_bitrate; static wchar_t g_path[MAX_PATH];
+ static u64 g_frames_in, g_frames_drop;
++static volatile LONG g_failed;
++static volatile LONG64 g_progress_ms;
+ 
+ static int q_count(void){ return (int)(g_qh-g_qt); }
+ 
+@@ -36,6 +39,16 @@
+ static AudioPacket g_aq[AQ];static u32 g_ah,g_at;
+ static SRWLOCK g_alock=SRWLOCK_INIT;
+ static int g_aactive;static u64 g_aepoch,g_anext,g_audio_drop,g_asession;static float g_again;
++int rec_failed(void){return InterlockedCompareExchange(&g_failed,0,0)!=0;}
++static void rec_progress(void){InterlockedExchange64(&g_progress_ms,(LONG64)GetTickCount64());}
++static void rec_fail(const char* reason,HRESULT hr){
++  if(InterlockedCompareExchange(&g_failed,1,0))return;
++  WARN("recorder: stopping capture: %s (%08lx); releasing game producers\n",reason,(unsigned long)hr);
++  g_ok=0;g_run=0;
++  AcquireSRWLockExclusive(&g_alock);g_aactive=0;ReleaseSRWLockExclusive(&g_alock);
++  SetEvent(g_ev);SetEvent(g_space_ev);
++}
++static int rec_wait_stalled(u64 entered){return rec_flow_stalled(GetTickCount64(),entered,(u64)InterlockedCompareExchange64(&g_progress_ms,0,0));}
+ void rec_audio_start(u64 guest_epoch){
+   AcquireSRWLockExclusive(&g_alock);g_asession++;g_aepoch=guest_epoch;g_anext=0;g_again=1;g_aactive=g_ok&&g_run;ReleaseSRWLockExclusive(&g_alock);
+ }
+@@ -48,10 +61,13 @@
+      Catch-up quanta are contiguous and share the video's guest-clock epoch. */
+   u64 frame=rec_audio_index(guest_time-g_aepoch,frames,g_anext);
+   g_anext=frame+frames;
++  u64 entered=GetTickCount64();
+   /* Keep the packet while the encoder is behind. Discarding a quantum here
+      made permanent holes even though live playback retained its own copy. */
+   while(g_ah-g_at>=AQ && g_aactive && g_run && session==g_asession){
+-    ReleaseSRWLockExclusive(&g_alock);WaitForSingleObject(g_space_ev,10);AcquireSRWLockExclusive(&g_alock);
++    ReleaseSRWLockExclusive(&g_alock);
++    if(rec_wait_stalled(entered)){rec_fail("encoder stalled with a full audio queue",E_FAIL);return;}
++    WaitForSingleObject(g_space_ev,10);AcquireSRWLockExclusive(&g_alock);
+   }
+   if(!g_aactive || !g_run || session!=g_asession){ReleaseSRWLockExclusive(&g_alock);return;}
+   AudioPacket* p=&g_aq[g_ah%AQ];p->frame=frame;p->count=frames;
+@@ -61,6 +77,11 @@
+ }
+ static int audio_peek(u64* frame){int ok;AcquireSRWLockShared(&g_alock);ok=g_ah!=g_at;if(ok)*frame=g_aq[g_at%AQ].frame;ReleaseSRWLockShared(&g_alock);return ok;}
+ static int audio_pop(AudioPacket* p){int ok;AcquireSRWLockExclusive(&g_alock);ok=g_ah!=g_at;if(ok){*p=g_aq[g_at%AQ];g_at++;}ReleaseSRWLockExclusive(&g_alock);if(ok)SetEvent(g_space_ev);return ok;}
++void rec_watchdog(void){
++  if(!g_th||!g_ok||!g_run)return;
++  u64 frame;int pending=q_count()>0||audio_peek(&frame);
++  if(pending&&rec_wait_stalled(0))rec_fail("encoder made no progress for 5 seconds",E_FAIL);
++}
+ static HRESULT audio_write(IMFSinkWriter* wr,DWORD stream,const i16* pcm,unsigned frames,u64 first){
+   IMFMediaBuffer* b=NULL;IMFSample* s=NULL;BYTE* dst=NULL;DWORD size=frames*4;
+   HRESULT hr=MFCreateMemoryBuffer(size,&b);
+@@ -151,31 +172,49 @@
+   if(in) IMFMediaType_Release(in); if(out) IMFMediaType_Release(out); if(at) IMFAttributes_Release(at);
+   if(FAILED(hr)){ WARN("recorder: Windows could not open the H.264 encoder (error %08lx)\n",(unsigned long)hr);
+     if(wr) IMFSinkWriter_Release(wr); MFShutdown(); CoUninitialize(); g_ok=0; SetEvent(g_ready_ev); return 0; }
++  if(!g_run||rec_failed()){IMFSinkWriter_Release(wr);MFShutdown();CoUninitialize();SetEvent(g_ready_ev);return 0;}
+   g_ok=1; SetEvent(g_ready_ev);
++  rec_progress();
+   LOG("recorder: AAC stereo 48 kHz / 192 kbps, audio/video share the guest clock\n");
+   for(;;){
++    if(rec_failed())break;
+     u64 af=0; int have_audio=audio_peek(&af),have_video=q_count()>0;
+     if(have_audio||have_video){
+       i64 vt=0;if(have_video)IMFSample_GetSampleTime(g_q[g_qt%RQ],&vt);
+-      if(have_audio && (!have_video||rec_audio_time(af)<=vt)){
++      /* A real gap is known only when the next PCM packet has a later
++         timestamp. Fill it in bounded pieces as video advances. */
++      if(have_audio && af>audio_next){
++        u64 limit=(u64)video_end*48000/10000000+4800;
++        u64 end=af<limit?af:limit;
++        if(end>audio_next){hr=audio_silence(wr,ai,&audio_next,end);if(FAILED(hr)){rec_fail("audio gap encoding failed",hr);break;}rec_progress();continue;}
++      }
++      if(!g_run&&!have_video && rec_audio_time(audio_next)>=video_end)break;
++      int choice=rec_flow_pick(have_audio,rec_audio_time(af),have_video,vt,rec_audio_time(audio_next),video_end,!g_run);
++      if(choice==REC_FLOW_AUDIO){
+         AudioPacket p;if(audio_pop(&p)){
+           hr=audio_silence(wr,ai,&audio_next,p.frame);
+           unsigned skip=audio_next>p.frame?(unsigned)(audio_next-p.frame):0;
++          if(!g_run&&!have_video){u64 last=(u64)video_end*48000/10000000;if(p.frame>=last)break;if(p.count>last-p.frame)p.count=(unsigned)(last-p.frame);}
+           if(SUCCEEDED(hr)&&skip<p.count){hr=audio_write(wr,ai,p.pcm+skip*2,p.count-skip,p.frame+skip);audio_next=p.frame+p.count;}
+-          if(FAILED(hr)){static int said;if(said++<5)WARN("recorder: audio encode error %08lx\n",(unsigned long)hr);}
++          if(FAILED(hr)){rec_fail("audio encoding failed",hr);break;}rec_progress();
+         }
+-      }else{
++      }else if(choice==REC_FLOW_VIDEO){
++        if(!g_run && !have_audio && rec_audio_time(audio_next)<vt){hr=audio_silence(wr,ai,&audio_next,(u64)vt*48000/10000000);if(FAILED(hr)){rec_fail("closing audio gap failed",hr);break;}}
+         IMFSample* sample=g_q[g_qt%RQ];InterlockedIncrement(&g_qt);SetEvent(g_space_ev);
+         i64 t=0,d=0;IMFSample_GetSampleTime(sample,&t);IMFSample_GetSampleDuration(sample,&d);if(t+d>video_end)video_end=t+d;
+         hr=IMFSinkWriter_WriteSample(wr,si,sample);IMFSample_Release(sample);
+-        if(FAILED(hr)){static int said;if(said++<5)WARN("recorder: video encode error %08lx\n",(unsigned long)hr);}
+-      }
++        if(FAILED(hr)){rec_fail("video encoding failed",hr);break;}rec_progress();
++      }else {WaitForSingleObject(g_ev,10);}
+       continue;
+     }
+     if(!g_run)break;
+     WaitForSingleObject(g_ev,100);
+   }
+-  if(video_end>0)audio_silence(wr,ai,&audio_next,(u64)video_end*48000/10000000);
++  if(!rec_failed()&&video_end>0)audio_silence(wr,ai,&audio_next,(u64)video_end*48000/10000000);
++  /* On an explicit recording failure, release queued samples instead of
++     feeding the failing encoder repeatedly. Normal close drains them above. */
++  while(q_count()>0){IMFSample* sample=g_q[g_qt%RQ];InterlockedIncrement(&g_qt);IMFSample_Release(sample);}
++  AcquireSRWLockExclusive(&g_alock);g_at=g_ah;ReleaseSRWLockExclusive(&g_alock);SetEvent(g_space_ev);
+   hr=IMFSinkWriter_Finalize(wr);
+   if(FAILED(hr)) WARN("recorder: could not finalize the .mp4 (error %08lx)\n",(unsigned long)hr);
+   IMFSinkWriter_Release(wr); MFShutdown(); CoUninitialize();
+@@ -184,18 +223,22 @@
+ static FILE* g_raw;   /* SWR_REC_RAW=1 dumps raw NV12, handy to test capture without MF */
+ 
+ int rec_open(const wchar_t* path, int w, int h, int fps){
+-  if(g_th || g_raw) return 0;
++  if(g_th && WaitForSingleObject(g_th,0)==WAIT_OBJECT_0){CloseHandle(g_th);g_th=NULL;CloseHandle(g_ev);CloseHandle(g_ready_ev);CloseHandle(g_space_ev);}
++  if(g_th || g_raw){WARN("recorder: previous encoder is still closing; capture remains disabled until it responds\n");return 0;}
+   g_w=w; g_h=h; g_fps=fps; wcsncpy(g_path,path,MAX_PATH-1);
+   if(getenv("SWR_REC_RAW")){ wchar_t p2[MAX_PATH]; _snwprintf(p2,MAX_PATH,L"%ls.nv12",path); g_raw=_wfopen(p2,L"wb"); g_frames_in=0; return g_raw!=NULL; }
+   /* ~0.12 bpp, 1080p60 ends up around 15 Mb/s */
+   double br=(double)w*h*fps*0.12; if(br<8e6) br=8e6; if(br>40e6) br=40e6; g_bitrate=(u32)br;
+   AcquireSRWLockExclusive(&g_alock);g_ah=g_at=0;g_aactive=0;g_audio_drop=0;ReleaseSRWLockExclusive(&g_alock);
+   g_qh=g_qt=0; g_frames_in=g_frames_drop=0; g_run=1; g_ok=0;
++  InterlockedExchange(&g_failed,0);rec_progress();
+   g_ev=CreateEventA(NULL,FALSE,FALSE,NULL); g_ready_ev=CreateEventA(NULL,TRUE,FALSE,NULL); g_space_ev=CreateEventA(NULL,FALSE,FALSE,NULL);
+   g_th=CreateThread(NULL,0,enc_thread,NULL,0,NULL);
+   if(!g_th){ CloseHandle(g_ev); CloseHandle(g_ready_ev); CloseHandle(g_space_ev); return 0; }
+   WaitForSingleObject(g_ready_ev,10000);
+-  if(!g_ok){ g_run=0; WaitForSingleObject(g_th,5000); CloseHandle(g_th); g_th=NULL; CloseHandle(g_ev); CloseHandle(g_ready_ev); CloseHandle(g_space_ev); DeleteFileW(g_path); return 0; }
++  if(!g_ok){g_run=0;
++    if(WaitForSingleObject(g_th,5000)!=WAIT_OBJECT_0){rec_fail("encoder startup timed out",E_FAIL);return 0;}
++    CloseHandle(g_th);g_th=NULL;CloseHandle(g_ev);CloseHandle(g_ready_ev);CloseHandle(g_space_ev);DeleteFileW(g_path);return 0;}
+   LOG("recorder: recording %dx%d at %d FPS, %.0f Mb/s\n",w,h,fps,g_bitrate/1e6);
+   return 1; }
+ 
+@@ -205,7 +248,10 @@
+   if(!g_th || !g_ok) return;
+   g_frames_in++;
+   /* the encoder can't keep up so wait. smooth mode already slows the game down so this barely happens */
+-  while(q_count()>=RQ && g_run)WaitForSingleObject(g_space_ev,50);
++  {u64 entered=GetTickCount64();while(q_count()>=RQ && g_run){
++    if(rec_wait_stalled(entered)){rec_fail("encoder stalled with a full video queue",E_FAIL);return;}
++    WaitForSingleObject(g_space_ev,50);
++  }}
+   if(!g_run)return;
+   DWORD n=(DWORD)((u64)g_w*g_h*3/2); IMFMediaBuffer* b=NULL; IMFSample* s=NULL; BYTE* p=NULL;
+   if(FAILED(MFCreateMemoryBuffer(n,&b))) return;
+@@ -220,7 +266,11 @@
+   if(g_raw){ fclose(g_raw); g_raw=NULL; LOG("recorder: %llu raw frames\n",(unsigned long long)g_frames_in); return; }
+   if(!g_th) return;
+   AcquireSRWLockExclusive(&g_alock);g_aactive=0;ReleaseSRWLockExclusive(&g_alock);
+-  g_run=0; SetEvent(g_ev);SetEvent(g_space_ev); WaitForSingleObject(g_th,INFINITE);
++  g_run=0; SetEvent(g_ev);SetEvent(g_space_ev);
++  if(WaitForSingleObject(g_th,rec_failed()?1000:5000)!=WAIT_OBJECT_0){
++    rec_fail("encoder did not finish; capture disabled until it responds",E_FAIL);
++    return; /* thread still owns its handles and MF objects; do not free them */
++  }
+   CloseHandle(g_th); g_th=NULL; CloseHandle(g_ev); CloseHandle(g_ready_ev); CloseHandle(g_space_ev);
+   LOG("recorder: %llu audio packets lost (queue limit)\n",(unsigned long long)g_audio_drop);
+   LOG("recorder: saved %ls (%llu frames, %llu dropped)\n",g_path,(unsigned long long)g_frames_in,(unsigned long long)g_frames_drop); }
+--- /dev/null
++++ b/runtime/rec_flow.h
+@@ -0,0 +1,20 @@
++/* SwitchRecomp by MZ Labs. Apache-2.0. */
++#ifndef SWR_REC_FLOW_H
++#define SWR_REC_FLOW_H
++#include <stdint.h>
++enum { REC_FLOW_WAIT,REC_FLOW_AUDIO,REC_FLOW_VIDEO };
++/* MF buffers the leading stream while waiting for the other. Never feed it
++   seconds of one stream just because the other producer is temporarily idle. */
++static inline int rec_flow_pick(int audio,int64_t at,int video,int64_t vt,
++                               int64_t audio_end,int64_t video_end,int draining){
++  int ar=audio&&(draining||at<=video_end+1000000);
++  int vr=video&&(draining||vt<=audio_end+1000000);
++  if(ar&&(!vr||at<=vt))return REC_FLOW_AUDIO;
++  if(vr)return REC_FLOW_VIDEO;
++  return REC_FLOW_WAIT;
++}
++static inline int rec_flow_stalled(uint64_t now,uint64_t entered,uint64_t progress){
++  uint64_t since=progress>entered?progress:entered;
++  return now>=since && now-since>=5000;
++}
++#endif

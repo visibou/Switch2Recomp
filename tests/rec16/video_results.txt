@@ -1,0 +1,2 @@
+PASS actual F7 capture/drain and CPU/GPU present producers: 600 distinct frames, exact 60fps timestamps, no duplicates/freezes from 500ms GPU queue jitter
+PASS frames queued before F7 starts are excluded from the new audio/video epoch

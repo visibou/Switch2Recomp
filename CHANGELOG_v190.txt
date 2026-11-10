@@ -1,0 +1,257 @@
+SwitchRecomp Switch 2 branch (from v190) - MZ Labs
+
+CPU: THE ARM INSTRUCTIONS SWITCH 2 CODE ADDS
+Switch 2 games use a few instructions newer than the Switch 1's CPU has. The recompiler and the interpreter now
+handle them:
+- RETAA/RETAB, BRAA/BRAB/BLRAA/BLRAB and their Z forms (pointer authentication): plain returns and branches.
+  Nothing signs pointers here (PACIASP and the other hint forms were NOPs already), so PAC*, AUT* and XPAC* leave
+  the register as it is.
+- LDAPR (load-acquire, ARMv8.3): the same code as LDAR.
+- LSE atomics (ARMv8.1): LDADD, LDCLR, LDEOR, LDSET, LDSMAX, LDSMIN, LDUMAX, LDUMIN, SWP, CAS and CASP in every
+  size and ordering (swr_lse, swr_casv and swr_casp in runtime/cpu.h). They are built on the swr_cas* compare-and-
+  swaps, so tcc builds them too, and a STXR of another thread still fails when one of them changed the memory.
+  CASP of two doublewords uses swr_cas128, as STXP does.
+- FABS and FNEG on half-precision vector lanes (ARMv8.2 FP16): only the sign bit changes.
+In MKW's ExeFS (main, sdk, subsdk0, subsdk1, rtld; 14 million words of code) the instructions the
+recompiler doesn't decode went from 190,484 to 637. What's left reads as data (literal pools, jump tables, a UDF
+trap). No word an existing instruction decoded changed decoder.
+tests/a64/run.sh runs every LSE (CAS and CASP included, half of them with memory that matches) and LDAPR form with
+random registers and memory on qemu-aarch64 -cpu max and through the recompiler's C, and compares registers and
+memory (544 instructions, 5 seeds: no difference), then FP16 FABS/FNEG with random lanes, NaNs and infinities (800
+runs: no difference).
+PAC and AUT aren't in that test on purpose: a real CPU signs, here they do nothing.
+The Switch 1 test homebrew gives the same image with the v190 recompiler, this one and this one's interpreter only.
+
+SERVICES, MEMORY AND GPU FOR SWITCH 2 GAMES
+MKW (title id 04...) now boots into its own code: nnMain runs, NVN opens the GPU and the game stops at
+its first file read because the dump used for testing has no RomFS. What got done for that:
+- Kernel: svcSetGpuMemoryAttribute (0x80). GetInfo 33 is the memory page size (0x1000): nn::ro checks the relro
+  alignment with it and the sdk heap grows by it, with 0 the game spun forever at boot. GetInfo 29/30 read as 0.
+- Memory: Switch 2 titles get 9 GB of reported memory (the console has 12). MKW takes one 7 GB block at
+  boot and aborted with the 3.2 GB of a Switch 1 game. memory_gb= in the game's ini still wins.
+- appletOE: the proxy opens with command 10 too (Switch 2 uses it instead of 0).
+- ISelfController 2000 hands out the graphics supervisor (runtime/svc_ns2.c): bootstrap, native memory, GPU
+  sessions and workers, syncpoints with the cache the game polls, the vi2 display sessions (present goes to the
+  same window as a Switch 1 game) and an nvdrv session that reports a Switch 2 GPU (Ampere, SM 8.8).
+- GPU: the Ampere classes (C797 3D, C7C0 compute, C7B5 copy, C56F channel) run on the Maxwell engines with the
+  methods that moved (program addresses, index/vertex buffer sizes, the new draw methods, semaphores, the TU104 MME).
+- Shaders: runtime/sm86.c lowers Ampere SASS (128 bit instructions) to Maxwell SASS and the usual translator turns
+  that into GLSL. ALU, integer, float, conversions, predicates, constant buffers (ULDC included), uniform registers,
+  attributes (ALD/AST/IPA), textures (TEX/TLD/TLD4/TXQ, the scalar forms too), loads/stores, KILL, branches and the
+  BSSY/BSYNC convergence pairs are in. Not yet: 64 bit compares (ISETP.EX), IMAD.WIDE, packed half math (HADD2 and
+  friends), F2FP, bindless textures in the vector form, compute dispatches (the Ampere QMD). Each shader logs how
+  many instructions it couldn't translate. Tested on hand assembled programs; no real Switch 2 shader has run yet.
+  Field positions come from Mesa's NAK encoder (MIT).
+- Switch 2 services fail soft: a command or case they don't know is logged and answered "ok" with zeros (image
+  layouts they don't know get a size that's surely big enough) instead of NotImplemented, so the game goes on and
+  one log shows several missing pieces. SWR_NS2_STRICT=1 answers NotImplemented again.
+- Switch 2 logs carry the NVIDIA driver calls (NvRmGpu*/NvOsDrv*, with results) and the first GPU methods by
+  default. SWR_TRACE_OFF=1 turns that off, SWR_METH_LOG=1 logs many more methods.
+  The trace keeps going past the driver's own setup (150 calls a function, the caller address on each), every
+  service command shows up a few times, and the GPU logs semaphores, syncpoints, draws, shaders and images many
+  times more often than for a Switch 1 game, so one run covers several stages.
+- Window textures whose memory pool reads back NvRmMem handle 0 get the handle of the memory the pool sits in
+  (MKW stopped in NativeWindow::InsertTexture). SWR_NO_FD_FIX=1 turns that off.
+- Image requirements no longer multiply the size by the image preference's 4th count field. MKW's window
+  pool came to 382 MB with it, more than the 117 MB GraphicsSystem heap its HeapDef sets, so the game had no memory
+  for it and the window aborted. It's 96 MB now.
+- Ampere compute (C7C0) runs macros: the channel's macro RAM, called from the compute subchannel too, with the
+  parameter DMA and the STATE reads on the compute registers. Compute-only channels upload their own macros.
+- Ampere compute launches (SEND_SIGNALING_PCAS_B/PCAS2_B) are seen: the dispatch is still skipped, but the QMD's
+  release semaphores are written. NVN's fences are a ring of these QMDs (the first holds the release, the next ones
+  only their payload), so the queue's fence words count up again: MKW hung at a black screen waiting
+  for its compute queue's fence.
+- Inline-to-memory uploads land word by word, like on the hardware: Switch 2's compute macros start a 4 KB upload
+  and send one 256 byte QMD, which never reached memory.
+- Switch 2 stall reports show the registers of threads busy in the driver (the address a fence wait polls).
+- IApplicationProxy commands 40 and 60 (Switch 2) hand out objects that answer ok: one of them is
+  IGraphicsScalingParametersFunctions, MKW jumped to 0 calling it after loading its world data.
+- The log names the romfs folder, and Switch 2 titles log many more missing files.
+- GameChat (Switch 2): chat:u hands out its user service with the "chatting" event (never fires), the graphics
+  supervisor's chat context (1201/1202) gives a session with its notification event, the camera video memory size
+  (1291), image pools (1211, consecutive image ids at their own offsets), QueryNativeImage (428) and MapNativeImage
+  (426) answer with the address, size and the descriptor fields nvnTextureInitializeFromNativeImage checks.
+  MKW sets up five camera views at boot and aborted on each missing piece.
+- Graphics supervisor 601/602: a context and its session (answered ok, logged).
+- On Switch 2 titles an unknown service answers command 0 with an object.
+- Waits and requests on handle 0 log who made them (the caller chain).
+- aud:u (Switch 2 audio): command 2 hands out the audio renderer manager.
+- GPU sparse regions (IGpuWorker 214/215): backed with memory of their own (up to 2 GB a region), the game's render
+  targets live there. vi2 31/32 hand out vsync events signalled at 60 Hz. Syncpoint slots (22/201/202) signal when
+  their syncpoint gets there, and always on cancel. QMD release 2 (word 52) and the forward-only release (bit 19).
+  Video decoder sessions (gsv 902/906/1002 and their command 1) and the decoder frame size (991): no picture yet.
+- Switch 2 logs list the game's nn::fs opens that fail (path and result), so a file missing from the romfs shows up.
+- Recompiler: PACGA (ARMv8.3 pointer authentication code, a fixed mix of both registers in the top half; MKW's sdk uses it in 58 places and stopped on the first) and the memory tagging instructions SUBP, IRG, GMI,
+  STG/STZG/ST2G/STZ2G and LDG (tags are always 0). A scan of MKW's main and sdk finds no other ARM64
+  instruction left out, and every SIMD form in them runs through the SIMD helper. Games need a recompile for these.
+- Linux: the stall report samples where busy threads run (it only did on Windows).
+- Switch 2 GPU-accessible memory (IGpuWorker 101) takes up to 16384 ranges and the nvmap table 65536 handles (they
+  were 1024 and 8192). MKW registers thousands of small ones while loading its world; once the table
+  was full a buffer got no CPU address and the game wrote through a null pointer (crash 7 s in).
+- The Switch 2 GPU characteristics report TSG subcontexts (flag bit 22, TSG interface version 0xB, 64 VEIDs a TSG).
+  With one VEID the second NVN queue's NvRmGpuTSGSubcontextCreate failed (0x11); the game kept that queue without a
+  channel and crashed flushing it.
+- vi2 111 accepts the display name ("default") MKW opens it with; 104/105 answer ok without logging.
+- Switch 2 (Ampere) textures: the TEX instruction names the bank its bound handle sits in (NVN2: bank 2), the
+  renderer read tex_cb_index (bank 0) and every handle came out 0, so no texture ever bound. Compute shaders too.
+- Switch 2 shader programs: each stage has its own 64 bit address (0x805/0x806 + 16*stage). One shared program region
+  read MKW's fragment programs from unmapped memory (25 programs decoded as garbage).
+- Ampere compute: inline QMDs (LOAD_INLINE_QMD_DATA 0xC8..0x107 to SET_INLINE_QMD_ADDRESS) are written and scheduled,
+  QMD 3.0 dispatches run (lowered with sm86.c), and QMD release reductions use the QMD's numbering (ADD read as MIN
+  left NVN2's +1 queue syncs at 0). MKW's compute queue waited 2 s per sync: 52 images in 6 minutes,
+  now 520.
+- sm86: ULDC indexed by a uniform register (opcode 0xabb). Opcodes left untranslated are logged once each.
+- Semaphore waits give up after 200 ms on Switch 2 titles (2 s elsewhere), SWR_SEM_TIMEOUT_MS sets it.
+- GL queue: a command whose memory can't be allocated waits for the GL thread to free queued uploads and is dropped
+  if there's still none (a MKW run crashed writing through NULL at 204 s).
+- Switch 2 block linear: inside a GOB, offset bits 5 and 6 trade places when they differ (native tiling). Every
+  compressed texture had hatched block edges and wrong colours.
+- TU104 macros: both ALUs read the registers as they were before the instruction. ALU1 saw ALU0's write, so NVN2's
+  uniform-bind macro read the wrong data RAM word and dropped every vertex stage uniform buffer: MKW's
+  UI vertices all collapsed and the screen stayed black.
+- Interpolated varyings come out multiplied by w on Ampere too (its shaders divide by w with a separate FMUL). The UI
+  texcoords were divided by ~1300 and every pixel read the same texel.
+- sm86: R2P (0x804), I2FP.F32 (0x245), BRA with both a guard and a condition predicate.
+- Switch 2 presents use the crop in the request (vi2 229 word 7): MKW renders 1920x1080 inside 3840x2160
+  window images. MKW now shows its map screen with the logo.
+- show_game_rt=1 in the ini (off by default): the window shows the biggest render target drawn with game textures
+  instead of the presented image (to see what a game renders while its own output is still black).
+- Textures over 2^28 texels (MKW's 8192x8192x68 virtual textures, 18 GB decoded) get a black 1x1
+  stand-in instead of a host texture.
+- GPU channels wait for each other without blocking the GPU thread: an acquire that isn't met parks its channel and
+  the other channels keep running (Switch 2 queues sync both ways: 3D releases, compute acquires and the reverse).
+  MKW lost 200 ms on each of those waits; 1.2 FPS on the map screen before. SWR_PARK_MS sets the limit.
+- Switch 2 presents without a fence (NativeSyncHandle -1) no longer wait 200 ms on syncpoint 0 (5 FPS cap).
+- Switch 2 sparse GPU regions only get backing up to 2 GB (SWR_SPARSE_MB): Windows commits that memory and MKW ran out of commit at 66 s (crash in deswizzle writing through NULL). Failed allocations there are skipped.
+- Compute global memory on Switch 2: NVN2 keeps {address, size} buffer descriptors at c0[0x10*n], not at c0[0x110+].
+  Every MKW compute shader that stores to memory was dropped; buffers are now made only for bases that
+  LDG/STG/ATOM actually use.
+- sm86: FSET, SGXT, F2FP.PACK_AB, |x| and -x on FMUL/FFMA/FSEL and .SAT on FADD with an immediate, SULD/SUST with a
+  bound handle, LDG/STG/LDS/STS/LDL/STL without a uniform register, RED and ATOMG, VOTE/VOTEU, MATCH, PLOP3/UPLOP3,
+  P2R, SHFL, R2UR, REDUX, UFLO/UBREV/UPOPC, UMOV with an immediate, the uniform register forms of FADD/FFMA (0xe..),
+  BRA.U, CALL used as a jump, and NVN2's zero padding after the shader header. Uniform predicates go to predicates the
+  shader doesn't use. 170 MKW shaders had untranslated instructions, 21 left (mesh shaders and BRX).
+- Test input scripts (script= in the ini or --script=) take up to 8 KB.
+- Ampere compute QMD dependencies (clc7c0qmd.h): a QMD with a DEPENDENCE_COUNTER runs once its decrements arrived,
+  from PCAS2 DECREMENT_DEPENDENCE or from another QMD's DEPENDENT_QMD0 when that one finishes, and PCAS2
+  INCREMENT_DEPENDENCE (12) adds one to wait for. NVN2's queue fences work this way (blank ring entries take the full
+  entry's counter, hand-off and release words). Their releases came late or never: MKW's race ran at a
+  frame every ~30 s, with a 1 s timeout on almost every queue sync.
+- Constant buffers read at fixed offsets only upload the bytes the shader reads. Every Switch 2 shader reads its
+  constants with LDC (the lowered ULDC), which marked the whole 64 KB: 30-50 MB of constants copied per frame.
+- sm86: TMML with a bound handle (102 of MKW's shaders, its terrain picks virtual texture pages with it)
+  and UP2UR. TMML results are fixed point with 8 fraction bits, like the hardware (Switch 1 shaders too).
+- A 3D texture with nothing in memory only gets the neutral color LUT when it has a LUT's shape (N x N x N) and no
+  GPU wrote it. MKW's volumetric fog grid (64x36x256, written by compute) got an identity table and the
+  whole race was tinted by screen position, blue on the left to yellow on the right.
+- ASTC textures are decoded on the CPU and stored as BC3 with the game's own mipmaps (Intel Gen9-11 keeps them
+  native): 1 byte a texel instead of 4. MKW's textures are ASTC 8x8 and came out 16 times their size,
+  9 GB of textures and the game closed. Mesa's ASTC on GPUs without it decodes to RGBA8 inside the driver, so it's
+  not used. SWR_ASTC_RGBA=1 / SWR_ASTC_NATIVE=1 go back.
+- Texture eviction counts seconds, not frames (at 1-2 FPS 2400 frames was 20 minutes), and over a budget
+  (SWR_TEX_BUDGET_MB, 2048 by default) textures unused for 5 s go first.
+- F5 traces save the GLSL a Switch 2 draw really used instead of translating the raw Ampere code again.
+
+SwitchRecomp v190 - MZ Labs
+
+INSTALL
+Unzip over your SwitchRecomp folder, open SwitchRecomp.exe and hit Update all games.
+GCC is still a separate download. TCC and Python come in the package.
+
+INTERFACE
+The alternate console theme is gone.
+Settings has background music now: pick a WAV, OGG or MP3 file, turn it on or off and set the volume.
+The music is decoded on your PC and loops. No music files come with the package.
+tool/build_tool.bat and build_tool.sh rebuild SwitchRecomp.exe with GCC.
+
+AUDIO
+Games have sound now. audren mixes PCM and DSP-ADPCM voices, audout streams PCM16 (Celeste, Brawlhalla),
+5.1 gets mixed down to stereo, and the output goes through waveOut on Windows and SDL2 on Linux.
+F7 records the sound to a .wav next to the .mp4, on the same clock as the video.
+Some effects, biquad filters and surround virtualization aren't done yet.
+
+GRAPHICS
+1 pixel high/wide render targets stay at native size (the Odyssey table artifacts), scale is per render target.
+Clear rect, scissor and viewport clip flags are separate like on hardware.
+Render enable modes and render override, conditional clears included.
+
+CRASHES
+Xenoblade titles get extra game memory automatically. Game memory can also be set in each game's options.
+
+LATER V190 BUILDS
+Intel on Windows: shaders compile in a second copy of the runtime (a helper process). When the Intel driver crashes
+on one of Odyssey's vertex shaders only the helper closes, a new one starts and tries a simpler version of that
+shader (no precise/invariant). The game keeps running instead of freezing and closing with "The video driver crashed".
+shader_process=1 in the game's ini turns it on for other GPUs, shader_process=0 turns it off.
+Odyssey: the bloom levels are read from their own render targets also when those are wider than the level (they're
+rounded up to 16 pixels). That path used to copy the levels, which came out as garbage on some GPUs: blue screen on
+some, a black screen with only the HUD on others.
+shadows=0 clears the skipped shadow maps to the right "far" value for games with reversed depth (Sonic Frontiers was
+almost black with shadows=0).
+F5 traces: the first line says the GPU, driver and render scale, and the values of small textures (exposure, LUTs)
+are read correctly now (they all read 0 before).
+Linux: SwitchRecomp-v190-x86_64.AppImage. It unpacks itself into ~/.local/share/SwitchRecomp the first time.
+Intel on Windows: Tomodachi Life froze a few seconds after it started using compute shaders. The GL thread checked
+the compute fences without the driver lock while the compile thread was inside the driver. It takes the lock now,
+and a compute result that never comes back can't hold the game's fences for more than 4 s.
+When the image stops for 15 s the log also says what the GPU thread, the GL thread and the compile thread are doing.
+Install.bat (Windows) and Install.sh (Linux) download what's missing into the SwitchRecomp folder, with internet and
+nothing else to do (no admin rights, no password): on Windows Python 3.14 (from NuGet) and GCC (from conda-forge),
+on Linux SDL2 (from PyPI) and GCC. Every download is checked against its SHA-256. The packages stay small (Python
+isn't in the Windows zip anymore). The tool runs them by itself too: Windows opens Install.bat when Python is
+missing, Linux gets SDL2 the first time it opens and GCC the first time you recompile.
+Intel on Windows: the shader helper process is off until the video driver crashes on a shader in that game (then
+it's on from the next run). With it always on, Tomodachi Life froze on a loading screen on Intel HD. shader_process=1
+in the ini still forces it on.
+When the image stops, the log dumps the thread state after 6 s instead of 15, and threads.txt also says what the GPU
+thread, the GL thread and the compile thread are doing.
+F1 (Windows): the controls page looks like the recompiler's settings now. Up/Down pick an option, Left/Right or
+Enter change it, a click changes it too, Esc or F1 goes back to the game.
+Sonic Frontiers: the lighting was black (only the HUD and a few emissive bits showed). The game copies its depth
+buffer with the 2D engine right after the gbuffer, and every lighting pass reads that copy. The copy came from
+memory, where the depth buffer never was, so the whole screen read as "far". The 2D engine copies depth buffers on
+the GPU now, as a depth texture with the same format.
+Code cleanup: removed functions and variables nothing used anymore (an old ASTC whole-image decoder, a draw capture
+nothing turned on, an unused audio submit, a GL queue flush and a few leftovers). The audio tests build again.
+performance.txt: every compute shader gets its own line in "GPU time of one frame" (key, workgroups, MB of buffers),
+it used to count for the pass after it.
+Images written by compute or fragment shaders go to the mip level their TIC asks for (res_min_mip_level). Sonic
+Frontiers builds its depth pyramid that way for the light culling, every level used to land in mip 0. F5 traces list
+the images each compute writes. SWR_NO_IMG_LEVEL=1 goes back to mip 0.
+
+LICENSE AND STARTUP SCREEN
+SwitchRecomp is now under the GNU AGPL v3 (LICENSE.txt) with additional terms in NOTICE.txt.
+The recompiler shows the SwitchRECOMP startup screen for 2 seconds and every recompiled game for 1 second (it
+vanishes at the end): white logo on black with the copyright notice in the corner. Under NOTICE.txt, copies and
+forks have to keep it.
+The Launcher is gone, the recompiler already does everything it did.
+Android (APK builds, touch controls, the GLES renderer) is gone from the code.
+
+- SubmitGpfifo with a wait fence no longer blocks the game thread: the GPU thread waits for the fence. Fixes apps that signal the fence from the CPU after submitting (official GBA emulator: 2 s per frame, black screen).
+- Color masks start enabled on a new GPU channel (GBA classics loading UI was invisible).
+- Indexed constant buffer uploads zero-fill the unused tail and track the valid size.
+- Compute image writes now hit the right mip on cubemaps and arrays too, not only 2D. Sonic Frontiers builds its light probe mips that way; they stayed black and the deferred lighting went black on every rough surface.
+- GPU watchdog: every pass gets a fence that the GL thread checks only when the image stops. The stall dump (log and threads.txt) now names the first pass the GPU never finished, with its render target and shaders.
+- performance.txt: the GPU timing of a frame is read only once the GPU is done with it. The GPU thread used to sit in that wait when the GPU was stuck.
+- loop_limit= in the game ini sets how many steps a shader with jumps runs before it gives up (default 16384).
+- F5 traces list the mean and max of every mip of the cubemaps and arrays a frame uses, and min/mean/max per layer of shadow arrays. SWR_IMG_LEVEL_2D_ONLY=1 limits compute image mips to 2D textures.
+- DEVELOPER_GUIDE.md: building, the code layout, reading logs and F5 traces, replaying a draw offline (tool/dev/replay.c), open bugs.
+- Cube map arrays assembled from render targets get their missing mips generated too, like cubemaps and 2D arrays already did. Sonic Frontiers' sky cubemap is a cube array and its lighting reads the upper mips. SWR_NO_CUBE_MIPGEN=1 turns the generation off.
+- Geometry shaders are translated and drawn (with separable programs): input/output primitives, per-vertex inputs, viewport and depth on every emitted vertex. They used to be skipped and the draw went through with VS+FS only.
+- ETC2 and EAC textures are uploaded as compressed 4x4 blocks (formats 0x06, 0x0A, 0x0B, 0x19, 0x1A). 0x19 was read as a depth format before.
+- Guest memory lookups (is a range free, find a free range) use the sorted block list in one pass. Games with large, fragmented address spaces spent a long time there.
+- A render target the GPU wrote isn't dropped anymore when guest memory doesn't match it, until it's flushed (SMO's background RT). SWR_NO_RT_TRUST=1 turns that off.
+- Render targets copied to memory before a DMA/2D copy are read back synchronously, so an old image can't land after the copy (SMO's corner video). SWR_ASYNC_RT_FLUSH=1 goes back to async.
+- Linux runtime builds use -std=gnu17 (GCC 15+ defaults to C23, which made the glibc compatibility wrappers recurse while reading the ini). A single libopenh264.a is accepted for H.264 too.
+- Shader decoding looks up each instruction in a 64K table built once (the patterns only use the top 16 bits) instead of scanning every pattern.
+- Shaders that use more constant buffers than the GPU's per-stage uniform block limit get the extra ones as read-only storage blocks (Xenoblade Chronicles DE on NVIDIA: "no buffers available for bindable uniform cb15").
+- Texture formats G24R8 (0x0E) and RGBX16SN (0x73, X reads as 1).
+- fps_limit=30 shows every other image while the game keeps running 60 steps a second.
+- Linux: copying a game's RomFS uses rsync when it's installed (only new or changed files), the Python copy otherwise.
+- VP9 WebM movies: the runtime indexes the .webm files the game reads and decodes the NVDEC VP9 jobs with libvpx (code adapted from Metroid Dread Recomp, AGPL-3.0; libvpx headers and license in runtime/vp9). libvpx 1.14.0 (VP9 decoder only, built from source with Ubuntu's security patches) is linked into the Linux and Windows runtimes.
+- MKW's virtual textures (8192x8192 arrays of 68 layers: the track and terrain) were a black 1x1
+  stand-in. They're kept without their top mips (SWR_VT_TEXELS_LOG2, 26 by default), and a layer goes up again
+  when its bytes change. The black normal maps gave NaN (black blocks and the red/white bokeh over the image).
+- sm86: uniform predicates past the free ones live in registers around the instruction that uses them (seven
+  UISETP/ULDC pairs at once in MKW's vertex shaders); UP2UR doesn't reserve the uniform predicates it only saves.
+- sm86: RET of a function with a single CALL returns right after that call.

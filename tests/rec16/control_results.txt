@@ -1,0 +1,4 @@
+PASS healthy encoder backpressure retains all packets and contiguous timestamps
+PASS independent 5-second watchdog disables stalled capture and releases audio producers
+PASS stalled encoder close returns without freeing handles still owned by its worker
+PASS completed encoder close releases all four handles normally

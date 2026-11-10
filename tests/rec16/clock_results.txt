@@ -1,0 +1,3 @@
+PASS smooth clock slows for CPU-bound frames even when GPU work is light
+PASS intentional 30fps waits do not cause clock feedback or repeated slowdown
+PASS start/stop guest time remains monotonic

@@ -1,0 +1,4 @@
+PASS real encoder scheduler bounds audio lead to ~100ms when video stops; no unbounded MF audio buffering
+PASS real encoder scheduler also bounds video lead when PCM production pauses
+PASS injected 8007000e stops recording immediately and releases pending queues instead of retrying failed writes
+PASS normal close drains a balanced one-second movie and trims audio beyond the last captured frame

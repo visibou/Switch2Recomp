@@ -1,0 +1,1 @@
+PASS actual renderer event worker reasserts pending AUX work between timer ticks, then stops extra wakeups after catch-up acknowledgement

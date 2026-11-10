@@ -1,0 +1,6 @@
+#version 450
+// The pipeline-cache test's pipelines (tests/t_vk_pcache.c): one per specialisation value, so each is a distinct cache entry
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint VALUE = 1;
+layout(std430, set = 0, binding = 0) buffer B { uint v[]; } b;
+void main() { b.v[gl_GlobalInvocationID.x] = VALUE * 2654435761u + gl_GlobalInvocationID.x; }

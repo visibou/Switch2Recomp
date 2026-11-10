@@ -1,0 +1,14 @@
+#version 450
+#extension GL_KHR_shader_subgroup_ballot : require
+// vkspv_ballot_per_lane's test (t_vk_ballot.c): the warp-aggregated counter of shader d2c50cca6e386abc (#12) after an early return. The ballot of the lanes
+// still running elects the highest as leader, which adds their number; the add's result is not read
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer Count { uint count; };
+layout(set = 0, binding = 1) readonly buffer Data { uint data[]; };
+void main() {
+    if (data[gl_GlobalInvocationID.x] == 0u) return;
+    uint mask = subgroupBallot(true).x;
+    uint leader = uint(findMSB(mask));
+    uint n = uint(bitCount(mask));
+    if (gl_SubgroupInvocationID == leader) atomicAdd(count, n);
+}

@@ -1,0 +1,19 @@
+# Nothing derived from a game or the firmware goes in here (ROADMAP.md): game folders, generated C, shaders,
+# traces, screenshots. Build outputs too.
+games/
+build/
+bin/
+docs/eden_step3/*.png
+__pycache__/
+*.pyc
+*.o
+*.exe
+!tool/**/*.exe
+tools/.build_*.log
+tools/texprep/*.dll
+tools/mkw/builder_gui.json
+# Downloaded by Install.bat and tools/get_external.py
+gcc/
+python/
+external/
+_downloads/

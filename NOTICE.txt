@@ -1,0 +1,43 @@
+SwitchRecomp
+Copyright 2026 MZ Labs
+Discord: https://discord.gg/gdRaXmBTY
+
+SwitchRecomp is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License version 3 (LICENSE.txt), with
+the additional terms below.
+
+ADDITIONAL TERMS (section 7 of the GNU AGPL v3)
+Under section 7(b), anyone who conveys SwitchRecomp, a modified version, a fork
+or a work based on it has to preserve these legal notices and author
+attributions:
+
+1. The SwitchRECOMP startup screen. The recompiler and every game built with
+   SwitchRecomp show it when they start: the SwitchRECOMP logo and the notice
+   "SwitchRECOMP (c) 2026 MZ Labs" on a black screen. It has to stay, shown
+   at startup, with the logo and the notice unchanged and readable. It is the
+   Appropriate Legal Notices of section 5(d) for these programs' interfaces.
+2. This NOTICE file and the copyright line above.
+3. The credit "SwitchRecomp by MZ Labs" in a place users can see (README,
+   credits, about box, release page or video description).
+
+This license covers the SwitchRecomp code (the recompiler, the runtime, the GUI
+and the scripts). It does not cover the bundled third-party components, which
+keep their own licenses (listed in README.txt), and it does not cover any game.
+Games, keys and firmware are not included and remain the property of their
+owners.
+
+Some fixes came from the SwitchRecomp fork by Mythrax-ZS under the Apache
+License 2.0. Those parts keep that license's notice and are distributed here
+as part of the AGPL v3 work.
+
+Background music decoders: dr_wav/dr_mp3 by David Reid and stb_vorbis by
+Sean Barrett and contributors. Their licenses are retained in tool/audio_decode/.
+Windows tool build libraries: SDL2, SDL2_image, SDL2_ttf (including FreeType and
+HarfBuzz); copyright/license notices are retained under tool/deps/.
+
+runtime/nvn/vk/third_party also holds stb_dxt by Sean Barrett (public domain or MIT).
+runtime/nvn comes from pokopia-native (https://github.com/xFractals/pokopia-native, MIT) and nxnative (https://github.com/seedds/nxnative, MIT, (c) seedds).
+Their licences are in runtime/nvn/third_party. runtime/nvn/vk/third_party holds astc-encoder (Apache-2.0) and bc7enc_rdo (MIT or Unlicense).
+
+renderdoc_app.h (runtime/nvn/vk/third_party/renderdoc), RenderDoc's in-application API header
+Copyright (c) 2015-2026 Baldur Karlsson. MIT License; the licence text is in the file.

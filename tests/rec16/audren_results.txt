@@ -1,0 +1,4 @@
+PASS 500ms AUX stall: all 101 contiguous quanta, one guest turn per IPC, missed wakeups re-signalled, voice deferral spans retained debt
+PASS 4,000 jittered updates: AUX sample timeline stays contiguous and catches up with video clock
+PASS non-AUX renderer retains elapsed-quantum scheduling
+PASS stopped renderer submits no host audio

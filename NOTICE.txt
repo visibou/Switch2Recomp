@@ -41,3 +41,7 @@ Their licences are in runtime/nvn/third_party. runtime/nvn/vk/third_party holds 
 
 renderdoc_app.h (runtime/nvn/vk/third_party/renderdoc), RenderDoc's in-application API header
 Copyright (c) 2015-2026 Baldur Karlsson. MIT License; the licence text is in the file.
+
+Switch2Recomp by visibou (https://github.com/visibou/Switch2Recomp) is a modified
+version of SwitchRecomp, changed from 2026-11-01 on (section 5(a) of the GNU AGPL
+v3), under the same license and the terms above.

@@ -8,7 +8,7 @@ Requires a decrypted executable file provided by the user. Everything is built l
 
 **Status: early developer preview.** The one supported game is **MKW 1.0.0**, through **[MKW Recomp](https://github.com/visibou/mkwrecomp)**, a separate repository built on this one. Other games may build and start, but nothing beyond that is supported yet, so please don't open issues for them.
 
-Switch2Recomp is based on [SwitchRecomp by MZ Labs](NOTICE.txt).
+**Switch2Recomp by visibou**, a modified version of [SwitchRecomp by MZ Labs](NOTICE.txt), changed from 2026-11-01 on.
 
 ## MKW Recomp
 

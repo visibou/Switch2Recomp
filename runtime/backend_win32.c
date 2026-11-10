@@ -199,6 +199,31 @@ static void cw_paint(HWND h){
   BitBlt(wdc,0,0,CW_W,CW_H,dc,0,0,SRCCOPY);
   DeleteObject(fh); DeleteObject(fb); DeleteObject(fs); DeleteObject(fk);
   SelectObject(dc,obm); DeleteObject(bm); DeleteDC(dc); EndPaint(h,&ps); }
+/* The SwitchRECOMP startup screen (NOTICE.txt, additional term 1) for the graphics paths that don't use OpenGL (SWR_GPU=nvn, eden):
+   the same image, length and fades as gpu_gl.c splash_play, drawn with GDI on the game window before its renderer takes it over. */
+#include "splash_img.h"
+static void splash_gdi(double secs){
+  static unsigned char px[SPLASH_W*SPLASH_H]; splash_unpack(px);
+  struct { BITMAPINFOHEADER h; RGBQUAD pal[256]; } bi; memset(&bi,0,sizeof bi);
+  bi.h.biSize=sizeof bi.h; bi.h.biWidth=SPLASH_W; bi.h.biHeight=-SPLASH_H; bi.h.biPlanes=1; bi.h.biBitCount=8; bi.h.biClrUsed=256;
+  HDC dc=GetDC(g_hwnd); if(!dc) return;
+  SetStretchBltMode(dc,HALFTONE); SetBrushOrgEx(dc,0,0,NULL);
+  double fin=0.12*secs, vstart=0.55*secs; u64 t0=plat_ns(), next=t0;
+  for(;;){ double t=(double)(plat_ns()-t0)/1e9; if(t>=secs) break;
+    double al=1.0, e=0.0;
+    if(t<fin) al=t/fin;
+    else if(t>vstart){ e=(t-vstart)/(secs-vstart); e=e*e*(3.0-2.0*e); al=1.0-e; }
+    for(int i=0;i<256;i++){ BYTE v=(BYTE)(i*al+0.5); bi.pal[i].rgbRed=bi.pal[i].rgbGreen=bi.pal[i].rgbBlue=v; }
+    RECT cr; GetClientRect(g_hwnd,&cr); int ww=cr.right, wh=cr.bottom;
+    if(ww>0 && wh>0){
+      int dw=ww, dh=ww*SPLASH_H/SPLASH_W; if(dh>wh){ dh=wh; dw=wh*SPLASH_W/SPLASH_H; }
+      double sc=1.0+0.06*e; int sw=(int)(dw*sc), sh=(int)(dh*sc);
+      PatBlt(dc,0,0,ww,wh,BLACKNESS);
+      StretchDIBits(dc,(ww-sw)/2,(wh-sh)/2,sw,sh,0,0,SPLASH_W,SPLASH_H,px,(BITMAPINFO*)&bi,DIB_RGB_COLORS,SRCCOPY); }
+    next+=16666667ull; u64 now=plat_ns(); if(next>now) plat_sleep_ns((i64)(next-now)); else next=now; }
+  RECT cr; GetClientRect(g_hwnd,&cr); PatBlt(dc,0,0,cr.right,cr.bottom,BLACKNESS);
+  ReleaseDC(g_hwnd,dc); }
+
 static LRESULT CALLBACK controls_proc(HWND h,UINT m,WPARAM w,LPARAM l){
   switch(m){
     case WM_ERASEBKGND: return 1;
@@ -317,11 +342,12 @@ void video_init(const char* title){
   { /* under proton the driver is mesa, glthread has to be turned on from the steam launch options */
     HMODULE nt=GetModuleHandleA("ntdll.dll"); if(nt && GetProcAddress(nt,"wine_get_version"))
       LOG("Proton/Wine detected: for more FPS put   mesa_glthread=true %%command%%   in the game's Steam launch options (moves the OpenGL driver work to another core)\n"); }
-  { extern int g_gpu_nvn; extern void nvn_window_set(void*); if(g_gpu_nvn){ nvn_window_set(g_hwnd); return; } }   /* SWR_GPU=nvn: the NVN layer's backend draws on this window, no OpenGL, no Eden */
-  { /* SWR_GPU=eden: Eden's Vulkan GPU on this window (gpu_eden.c); OpenGL when it is off or did not start */
+  { extern int g_gpu_nvn; extern void nvn_window_set(void*); if(g_gpu_nvn){ splash_gdi(1.0); nvn_window_set(g_hwnd); return; } }   /* SWR_GPU=nvn: the NVN layer's backend draws on this window, no OpenGL, no Eden */
+  { /* SWR_GPU=eden: Eden's Vulkan GPU on this window (gpu_eden.c); OpenGL when it is off or did not start (OpenGL shows the startup screen itself) */
     extern int gpu_eden_wanted(void), gpu_eden_start(void*,int,int); extern void gpu_gl_start(void);
     RECT cr; GetClientRect(g_hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top;
-    if(!(gpu_eden_wanted() && gpu_eden_start(g_hwnd,cw>0? cw : 1280,ch>0? ch : 720))) gpu_gl_start(); }
+    int eden=gpu_eden_wanted(); if(eden) splash_gdi(1.0);
+    if(!(eden && gpu_eden_start(g_hwnd,cw>0? cw : 1280,ch>0? ch : 720))) gpu_gl_start(); }
 }
 
 /* ---------------------------------------------------------------- GL, GPU thread */
